@@ -9,6 +9,7 @@ import java.util.Random;
 import logist.plan.Plan;
 import logist.simulation.Vehicle;
 import logist.task.Task;
+import logist.task.TaskSet;
 import logist.topology.Topology.City;
 
 // Class representing a solution of the pickup and delivery problem for a bunch of vehicle
@@ -43,6 +44,35 @@ public class Solution {
 		}
 		
 		this.tasksPerVehicle.put(vehicle, new TaskList(taskList));
+	}
+	
+	public void addTask(Task task) {
+		int vehicle_id = (new Random()).nextInt(tasksPerVehicle.size());
+		Vehicle vehicle = null;
+		int i = 0;
+		for(Vehicle v : tasksPerVehicle.keySet()) {
+			if(i == vehicle_id) {
+				vehicle = v;
+				break;
+			}
+			
+			i++;
+		}
+		
+		tasksPerVehicle.get(vehicle).insertTask(task, 0, 1);
+	}
+	
+	public boolean removeTask(Task task) {
+		for(TaskList taskList : tasksPerVehicle.values()) {
+			for(int i = 0; i < taskList.tasks.size(); i++) {
+				if(taskList.tasks.get(i).task == task) {
+					taskList.removeTask(i);
+					return true;
+				}
+			}
+		}
+		
+		return false;
 	}
 	
 	// Get all solutions neighbour of this one.
@@ -152,6 +182,54 @@ public class Solution {
 		return neighbours;
 	}
 	
+	public int getNumberOfTasks() {
+		int numberOfTasks = 0;
+		
+		for(TaskList taskList : tasksPerVehicle.values()) {
+			numberOfTasks += taskList.tasks.size();
+		}
+		
+		return numberOfTasks;
+	}
+	
+	public void updateTasks(TaskSet taskSet) {
+		List<Task> tasks = new ArrayList<Task>();
+		for(Task t : taskSet) {
+			tasks.add(t);
+		}
+		boolean success;
+		for(Task t : taskSet) {
+			success = false;
+			innerLoop:
+			for(TaskList taskList : tasksPerVehicle.values()) {
+				for(int i = 0; i < taskList.tasks.size(); i++) {
+					Task oldT = taskList.tasks.get(i).task;
+					
+					if(t.pickupCity == oldT.pickupCity
+							&& t.deliveryCity == oldT.deliveryCity
+							&& t.weight == oldT.weight) {
+						if(!tasks.contains(oldT)) {
+							int pickUpOrder = taskList.tasks.get(i).pickUpOrder;
+							int deliverOrder = taskList.tasks.get(i).deliverOrder;
+							taskList.removeTask(i);
+							taskList.insertTask(t, pickUpOrder, deliverOrder);
+							success = true;
+							break innerLoop;
+						}
+						else {
+							System.out.println("Task already contained");
+							System.out.println("Old: " + oldT.toString());
+							System.out.println("New: " + t.toString());
+						}
+					}
+				}
+			}
+			if(!success) {
+				System.out.println("Error with task " + t.toString());
+			}
+		}
+	}
+	
 	// Return the cost of this solution.
 	public double getCost() {
 		double cost = 0;
@@ -160,7 +238,7 @@ public class Solution {
 			Vehicle v = entry.getKey();
 			TaskList taskList = entry.getValue();
 			
-			cost += v.costPerKm()*taskList.getDistance(v.getCurrentCity());
+			cost += v.costPerKm()*taskList.getDistance(v.homeCity());
 		}
 		
 		return cost;

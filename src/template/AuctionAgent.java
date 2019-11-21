@@ -1,8 +1,8 @@
 package template;
 
-//the list of imports
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -11,53 +11,136 @@ import javax.swing.JFrame;
 
 import logist.agent.Agent;
 import logist.behavior.AuctionBehavior;
+import logist.plan.Action;
 import logist.plan.Plan;
 import logist.simulation.Vehicle;
 import logist.task.Task;
 import logist.task.TaskDistribution;
 import logist.task.TaskSet;
 import logist.topology.Topology;
+import logist.topology.Topology.City;
 import ptolemy.plot.Plot;
 
-
-public class AuctionDummy implements AuctionBehavior {
+public class AuctionAgent implements AuctionBehavior {
 
 	private Agent agent;
-	private double factor;
+	private Topology topology;
+	private TaskDistribution distribution;
 	private double cost;
+	private double newCost;
+	private Solution solution;
+	private Solution newSolution;
+	private List<Double> meanCostPerTask;
+	private int n_bar;
 
 	@Override
 	public void setup(Topology topology, TaskDistribution distribution,
 			Agent agent) {
 		this.agent = agent;
-		this.factor = agent.readProperty("factor", Double.class, 1.);
+		this.topology = topology;
+		this.distribution = distribution;
 		this.cost = 0;
+		this.newCost = 0;
+		this.n_bar = 0;
+		this.solution = this.getInitialSolution(agent.vehicles(), TaskSet.create(new Task[0]));
+		this.meanCostPerTask = new ArrayList<Double>();
+		this.newSolution = solution;
+		
+//		this.computeMeanCostPerTask();
 	}
 	
 	@Override
 	public Long askPrice(Task task) {
 		
-		TaskSet tasks = agent.getTasks().clone();
-		tasks.add(task);
+//		TaskSet tasks = agent.getTasks().clone();
+//		tasks.add(task);
 		
-		Solution sol = this.computePlan(agent.vehicles(), tasks);
+//		Solution newSolution = this.computePlan(agent.vehicles(), tasks);
+		this.newSolution = this.computePlan(solution, task);
 		
-		if(sol == null)
+		if(newSolution == null)
 			return null;
 
-		double marginalCost = sol.getCost() - cost;
+		this.newCost = newSolution.getCost();
 		
-		return (long)(marginalCost*factor);
+		if(newCost < cost) {
+			this.solution = new Solution(newSolution);
+			this.solution.removeTask(task);
+			this.cost = solution.getCost();
+		}
+
+		double Cm = newCost - cost;
+		
+		int n = agent.getTotalTasks(); // Number of tasks we currently have
+		int h = 5; // Horizon
+//		double gamma = ((double)n_bar + 3)/((double)n + 3); // Importance given to the future
+//		double gamma = 1. - 2.*(n - n_bar)/h; // How much we care about the future
+//		double epsilon = 2.*(n - n_bar)/h; // How much we care about the goodness of the task compared to the mean
+		double gamma = 1. - 2.*(n - 0)/h; // How much we care about the future
+		double epsilon = 2.*(n - 0)/h; // How much we care about the goodness of the task compared to the mean
+		
+//		double Ch = this.getMeanFutureCost(tasks, h - 1, 10)/(n + h - 1);
+		double Ch = this.getMeanFutureCost(agent.getTasks(), h, 10)/(n + h);
+		double Cn = this.getMeanFutureCost(agent.getTasks(), 1, 10)/(n + 1);
+		double C;
+		if(Cm > Cn)
+			C = Cn + Math.max(epsilon, 0.)*(Cm - Cn);
+		else
+			C = Cn + Math.max(1. - epsilon, 0.)*(Cm - Cn);
+		
+		System.out.println("Tasks: " + n + " / " + n_bar);
+		System.out.println("Marginal Cost: " + Cm);
+		System.out.println("C(n+h): " + Ch);
+		System.out.println("C(n): " + Cn);
+		System.out.println("C: " + C);
+		
+//		double C = Cm - gamma*(Cm - this.getMeanCostPerTask(n + h))
+//				+ epsilon*(Cm - this.getMeanCostPerTask(n));
+		
+		double bid;
+		
+//		if(C < Ch)
+//			bid = Ch - gamma*(Ch - C);
+//		else
+//			bid = C - gamma*(C - Ch);
+//		
+		double k = 8, l = 3, aggressivity = 4;
+//		if(n < h) {
+//			bid /= (1. + (k - 1)*(h - n)/h);
+//		}
+		
+		C = Cm/Cn*Ch;
+		if(n < h) {
+			double fact = Math.pow((double)n/h, 1/aggressivity);
+			bid = C/(k + (1 - k)*fact) + fact*Cn/l;
+		}
+		else {
+			bid = C + Cn/l;
+		}
+		
+		
+		System.out.println("Bid: " + bid + "\n");
+		return (long)bid;
 	}
 	
 	@Override
 	public void auctionResult(Task task, int winner, Long[] offers) {
-		if(winner != agent.id())
-			return;
-					
-		Solution sol = this.computePlan(agent.vehicles(), agent.getTasks());
-		
-		this.cost = sol.getCost();
+		if(winner == agent.id()) {
+			Solution sol = this.computePlan(agent.vehicles(), agent.getTasks());
+			double cost = sol.getCost();
+			
+			if(cost < this.newCost) {
+				this.solution = sol;
+				this.cost = cost;
+			}
+			else {
+				this.solution = newSolution;
+				this.cost = newCost;
+			}
+		}
+		else {
+			this.n_bar++;
+		}
 	}
 	
     @Override
@@ -67,7 +150,8 @@ public class AuctionDummy implements AuctionBehavior {
         List<Plan> plans = new ArrayList<Plan>();
         
         // Compute a good plan with the SLS algorithm
-        Solution sol = this.computePlan(vehicles, tasks);
+//        Solution sol = this.computePlan(vehicles, tasks);
+        Solution sol = solution;
         
         if(sol == null) {
             for(Vehicle v : vehicles) {
@@ -75,6 +159,7 @@ public class AuctionDummy implements AuctionBehavior {
             }
         }
         else {
+            sol.updateTasks(tasks);
 	        Map<Vehicle, Plan> planMap = sol.getPlans();
 	        
 	        for(Vehicle v : vehicles) {
@@ -94,13 +179,124 @@ public class AuctionDummy implements AuctionBehavior {
         return plans;
     }
     
+    private Task getRandomTask(int id) {
+    	double p = (new Random()).nextDouble();
+    	double cumul = 0;
+    	
+    	for(City c1 : topology.cities()) {
+    		for(City c2 : topology.cities()) {
+    			cumul += distribution.probability(c1, c2);
+    			
+    			if(cumul > p) {
+    				return new Task(id, c1, c2, 0, distribution.weight(c1, c2));
+    			}
+    		}
+    	}
+    	
+    	return null;
+    }
+    
+    private double getMeanFutureCost(TaskSet tasks, int horizon, int samples) {
+    	double cost = 0;
+    	
+//    	if(tasks.size() > 20) {
+//    		return this.cost;
+//    	}
+    	
+    	horizon = Math.min(horizon, Math.max(20 - tasks.size(), 0));
+    	
+    	for(int i = 0; i < samples; i++) {
+    		Task[] universe = new Task[tasks.size() + horizon];
+    		
+    		int j = 0;
+    		for(Task t : tasks) {
+    			universe[j] = new Task(j, t.pickupCity, t.deliveryCity, t.reward, t.weight);
+    			j++;
+    		}
+    		for(int k = 0; k < horizon; k++) {
+    			universe[j] = this.getRandomTask(j);
+    			j++;
+    		}
+    		TaskSet taskSet = TaskSet.create(universe);
+    		
+    		Solution sol = this.computePlan(agent.vehicles(), taskSet);
+    		cost += sol.getCost();
+    	}
+    	
+    	return cost/samples;
+    }
+    
+    private void computeMeanCostPerTask() {
+    	int horizon = 20;
+    	int sampleSize = 10;
+    	
+    	for(int i = 0; i < horizon; i++) {
+    		this.meanCostPerTask.add(0.);
+    	}
+    	
+    	for(int i = 0; i < sampleSize; i++) {
+    		Task[] tasks = new Task[horizon];
+    		for(int j = 0; j < horizon; j++) {
+    			tasks[j] = this.getRandomTask(j);
+    		}
+    		TaskSet taskSet = TaskSet.noneOf(TaskSet.create(tasks));
+    		
+    		for(int j = 0; j < horizon; j++) {
+    			taskSet.add(tasks[j]);
+    			
+    			Solution sol = this.computePlan(agent.vehicles(), taskSet);
+    			this.meanCostPerTask.set(j, sol.getCost());
+    		}
+    	}
+    	
+    	for(int i = 0; i < horizon; i++) {
+    		double costPerTask = this.meanCostPerTask.get(i)/(i + 1)/sampleSize;
+    		this.meanCostPerTask.set(i, costPerTask);
+    		System.out.println("Mean cost for " + (i + 1) + " tasks: " + costPerTask);
+    	}
+    }
+    
+    private double getMeanCostPerTask(int numberOfTasks) {
+    	if(numberOfTasks < 1)
+    		return 0;
+    	else {
+    		int id = Math.min(numberOfTasks, meanCostPerTask.size());
+    		return meanCostPerTask.get(id - 1);
+    	}
+    }
+    
     private Solution computePlan(List<Vehicle> vehicles, TaskSet tasks) {
     	Solution initSol = this.getInitialSolution(vehicles, tasks);
     	
     	if(initSol == null)
     		return null;
     	
-    	return this.computeSLS(initSol, 0.5, 20000, 2000, 100, 2, false);
+    	int stagn;
+    	int numberOfTasks = tasks.size();
+    	if(numberOfTasks < 5)
+    		stagn = 10*numberOfTasks;
+    	else if(numberOfTasks < 10)
+    		stagn = 50*(numberOfTasks - 4);
+    	else
+    		stagn = 100*(numberOfTasks - 7);
+    	
+    	return this.computeSLS(initSol, 0.5, 20000, stagn, 100, 2, false);
+    }
+    
+    private Solution computePlan(Solution lastSolution, Task newTask) {
+    	Solution initSol = new Solution(lastSolution);
+    	initSol.addTask(newTask);
+    	
+    	int stagn;
+    	int numberOfTasks = initSol.getNumberOfTasks();
+    	if(numberOfTasks < 5)
+    		stagn = 10*numberOfTasks;
+    	else if(numberOfTasks < 10)
+    		stagn = 50*(numberOfTasks - 4);
+    	else
+    		stagn = 100*(numberOfTasks - 7);
+    	
+    	return this.computeSLS(initSol, 0.5, 20000, stagn, 100, 2, false);
     }
 	
     // Return a solution with the tasks randomly spread between the vehicles. Return
