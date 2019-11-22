@@ -192,6 +192,21 @@ public class Solution {
 		return numberOfTasks;
 	}
 	
+	public void updateTask(Task oldTask, Task newTask) {
+		for(TaskList taskList : tasksPerVehicle.values()) {
+			for(int i = 0; i < taskList.tasks.size(); i++) {
+				Task oldT = taskList.tasks.get(i).task;
+				
+				if(oldT == oldTask) {
+					int pickUpOrder = taskList.tasks.get(i).pickUpOrder;
+					int deliverOrder = taskList.tasks.get(i).deliverOrder;
+					taskList.removeTask(i);
+					taskList.insertTask(newTask, pickUpOrder, deliverOrder);
+				}
+			}
+		}
+	}
+	
 	public void updateTasks(TaskSet taskSet) {
 		List<Task> tasks = new ArrayList<Task>();
 		for(Task t : taskSet) {

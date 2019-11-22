@@ -31,7 +31,10 @@ public class AuctionAgent implements AuctionBehavior {
 	private Solution solution;
 	private Solution newSolution;
 	private List<Double> meanCostPerTask;
-	private int n_bar;
+	private Task lastTask;
+	
+	private List<Double> ennemyBids;
+	private List<Task> ennemyTasks;
 
 	@Override
 	public void setup(Topology topology, TaskDistribution distribution,
@@ -41,21 +44,20 @@ public class AuctionAgent implements AuctionBehavior {
 		this.distribution = distribution;
 		this.cost = 0;
 		this.newCost = 0;
-		this.n_bar = 0;
 		this.solution = this.getInitialSolution(agent.vehicles(), TaskSet.create(new Task[0]));
 		this.meanCostPerTask = new ArrayList<Double>();
 		this.newSolution = solution;
+		
+		this.ennemyBids = new ArrayList<Double>();
+		this.ennemyTasks = new ArrayList<Task>();
 		
 //		this.computeMeanCostPerTask();
 	}
 	
 	@Override
 	public Long askPrice(Task task) {
+		this.lastTask = task;
 		
-//		TaskSet tasks = agent.getTasks().clone();
-//		tasks.add(task);
-		
-//		Solution newSolution = this.computePlan(agent.vehicles(), tasks);
 		this.newSolution = this.computePlan(solution, task);
 		
 		if(newSolution == null)
@@ -88,35 +90,46 @@ public class AuctionAgent implements AuctionBehavior {
 		else
 			C = Cn + Math.max(1. - epsilon, 0.)*(Cm - Cn);
 		
-		System.out.println("Tasks: " + n + " / " + n_bar);
+		System.out.println("Tasks: " + n + " / " + ennemyTasks.size());
 		System.out.println("Marginal Cost: " + Cm);
 		System.out.println("C(n+h): " + Ch);
 		System.out.println("C(n): " + Cn);
 		System.out.println("C: " + C);
 		
-//		double C = Cm - gamma*(Cm - this.getMeanCostPerTask(n + h))
-//				+ epsilon*(Cm - this.getMeanCostPerTask(n));
-		
 		double bid;
+		double k = 8, l = 1/0.8, aggressivity = 4;
 		
-//		if(C < Ch)
-//			bid = Ch - gamma*(Ch - C);
-//		else
-//			bid = C - gamma*(C - Ch);
-//		
-		double k = 8, l = 3, aggressivity = 4;
-//		if(n < h) {
-//			bid /= (1. + (k - 1)*(h - n)/h);
-//		}
+		double meanEnnemyBid = 0;
+		double minEnnemyBid = Double.POSITIVE_INFINITY;
+		int ennemyNB = Math.min(ennemyBids.size(), h);
+		if(ennemyNB == 0)
+			minEnnemyBid = 0;
+		else {
+			for(int i = 0; i < ennemyNB; i++) {
+				meanEnnemyBid += ennemyBids.get(ennemyBids.size() - 1 - i);
+				minEnnemyBid = Math.min(minEnnemyBid, ennemyBids.get(ennemyBids.size() - 1 - i));
+			}
+			meanEnnemyBid /= ennemyNB;
+		}
+		
+		System.out.println("Ennemy min bid: " + minEnnemyBid);
 		
 		C = Cm/Cn*Ch;
-		if(n < h) {
-			double fact = Math.pow((double)n/h, 1/aggressivity);
-			bid = C/(k + (1 - k)*fact) + fact*Cn/l;
+		System.out.println("Ratio: " + (Ch/Cn));
+//		if(n < h) {
+//			double fact1 = Math.pow((double)n/h, 1/aggressivity);
+//			double fact2 = Math.pow((double)n/h, aggressivity);
+//			bid = C/(k + (1 - k)*fact1) + fact1*Cn/l;
+//		}
+		if(n < 3) {
+			bid = 0;
 		}
 		else {
-			bid = C + Cn/l;
+//			bid = C + Cn/l;
+			bid = Math.max(C, 0.8*meanEnnemyBid);
 		}
+		
+		bid = Math.max(bid, 0.8*minEnnemyBid);
 		
 		
 		System.out.println("Bid: " + bid + "\n");
@@ -135,12 +148,16 @@ public class AuctionAgent implements AuctionBehavior {
 			}
 			else {
 				this.solution = newSolution;
+				this.solution.updateTask(lastTask, task);
 				this.cost = newCost;
 			}
 		}
 		else {
-			this.n_bar++;
+			this.ennemyTasks.add(task);
 		}
+		
+		int ennemyAgentID = 1 - agent.id();
+		this.ennemyBids.add((double)offers[ennemyAgentID]);
 	}
 	
     @Override
@@ -159,7 +176,7 @@ public class AuctionAgent implements AuctionBehavior {
             }
         }
         else {
-            sol.updateTasks(tasks);
+//            sol.updateTasks(tasks);
 	        Map<Vehicle, Plan> planMap = sol.getPlans();
 	        
 	        for(Vehicle v : vehicles) {
