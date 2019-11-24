@@ -9,6 +9,8 @@ import java.util.Random;
 
 import javax.swing.JFrame;
 
+import logist.LogistPlatform;
+import logist.LogistSettings;
 import logist.agent.Agent;
 import logist.behavior.AuctionBehavior;
 import logist.plan.Plan;
@@ -22,29 +24,42 @@ import logist.topology.Topology.City;
 import ptolemy.plot.Plot;
 
 public class AuctionAgent implements AuctionBehavior {
-	private final boolean verbose = true;
-	private Agent agent;
-	private final int n0 = 3; // "Early game"
+	private final boolean verbose = true; // Do prints
+	
+	private long bidTimeout;
+	
+	private Agent agent; // Our agent
+	
+	// Strategy related fields
+	private final int n0 = 3; // number of task defining the "Early game" limit
 	private final long bid0 = 1000; // First bid
 	private long lastBid;
-	private final int minOpponentBidHorizon = 5;
-	private double cost;
-	private double newCost;
-	private Solution solution;
-	private Solution newSolution;
+	private final int minOpponentBidHorizon = 5; // How far we go to compute the min opponent bid
+	private final double minOpponentBidRatio = 0.8; // Ratio used when bidding the minimal oppenent bid
+	private final double regLinSafetyFactor = 3;
+	
+	// Plan related fields
+	private double cost; // Current plan cost
+	private double newCost; // Plan cost with the auctioned task
+	private Solution solution; // Current plan
+	private Solution newSolution; // Plan with the auctioned task
 	private Task lastTask;
 	
+	// Opponent related fields
 	private List<Double> opponentBids;
 	private List<Task> opponentTasks;
-	private List<Double> opponentCms;
-	private double opponentCost;
-	private Solution opponentSolution;
+	private List<Double> opponentCms; // Opponent marginal costs
+	private double opponentCost; // Opponent estimated plan cost
+	private Solution opponentSolution; // Opponent estimated plan
 	private final int opponentCmMinSamples = 3;
 
 	@Override
 	public void setup(Topology topology, TaskDistribution distribution,
 			Agent agent) {
+		this.bidTimeout = LogistPlatform.getSettings().get(LogistSettings.TimeoutKey.BID);
+		
 		this.agent = agent;
+		
 		this.lastBid = 0;
 		this.cost = 0;
 		this.newCost = 0;
@@ -65,13 +80,12 @@ public class AuctionAgent implements AuctionBehavior {
 		if(verbose)
 			System.out.println("Tasks: " + n + " / " + nOpponent);
 		
-		long startTime = System.currentTimeMillis();
 		// Save it so we can replace it later with the correct one (due to logist constrains)
 		this.lastTask = task;
 		
 		//// Compute marginal cost
 		// Compute the solution with the new task and its cost
-		this.newSolution = this.computePlan(solution, task);
+		this.newSolution = this.computePlan(solution, task, (bidTimeout - 10)/2);
 		if(newSolution == null) // Don't take the task if we can't handle it
 			return null;
 		this.newCost = newSolution.getCost();
@@ -86,12 +100,9 @@ public class AuctionAgent implements AuctionBehavior {
 		
 		// Marginal cost
 		double Cm = newCost - cost;
-		if(verbose) {
-			System.out.println("Time to compute Cm: "
-					+ (System.currentTimeMillis() - startTime) + " ms");
-			
+		
+		if(verbose)
 			System.out.println("Marginal Cost: " + Cm);
-		}
 		
 		// Compute the minimum bid from the opponent over the last X auctions
 		double minOpponentBid = Double.POSITIVE_INFINITY;
@@ -113,7 +124,7 @@ public class AuctionAgent implements AuctionBehavior {
 				return (lastBid/2);
 			}
 			else {
-				return (long)(0.8*minOpponentBid);
+				return (long)(minOpponentBidRatio*minOpponentBid);
 			}
 		}
 		
@@ -170,7 +181,7 @@ public class AuctionAgent implements AuctionBehavior {
 				sLinRegError = Math.sqrt(sLinRegError);
 				
 				// Compute the opponent new cost
-				Solution opponentNewSolution = this.computeOpponentPlan(task);
+				Solution opponentNewSolution = this.computeOpponentPlan(task, (bidTimeout - 10)/2);
 				double opponentNewCost = opponentNewSolution.getCost();
 				if(opponentNewCost < opponentCost) {
 					this.opponentSolution = new Solution(opponentNewSolution);
@@ -198,14 +209,14 @@ public class AuctionAgent implements AuctionBehavior {
 			// raise our bid and still get the task. If the predicted bid is lower than our
 			// bid, we can lower our bid to the mean of our bid and the opponent one (see report
 			// for details)
-			if(bid < predictedOpponentBid - 3*sLinRegError - 10)
-				bid = predictedOpponentBid - 3*sLinRegError - 10;
-			else if(bid > predictedOpponentBid + 3*sLinRegError)
-				bid = (bid + predictedOpponentBid + 3*sLinRegError)/2;
+			if(bid < predictedOpponentBid - regLinSafetyFactor*sLinRegError - 10)
+				bid = predictedOpponentBid - regLinSafetyFactor*sLinRegError - 10;
+			else if(bid > predictedOpponentBid + regLinSafetyFactor*sLinRegError)
+				bid = (bid + predictedOpponentBid + regLinSafetyFactor*sLinRegError)/2;
 		}
 		
 		// Safety measure
-		bid = Math.max(bid, 0.8*minOpponentBid);
+		bid = Math.max(bid, minOpponentBidRatio*minOpponentBid);
 		
 		if(verbose)
 			System.out.println("Bid: " + bid + "\n");
@@ -218,7 +229,7 @@ public class AuctionAgent implements AuctionBehavior {
 		this.lastBid = offers[agent.id()];
 		
 		// Compute the new opponent solution and its cost
-		Solution opponentNewSolution = this.computeOpponentPlan(task);
+		Solution opponentNewSolution = this.computeOpponentPlan(task, (bidTimeout - 10)/2);
 		double opponentNewCost = opponentNewSolution.getCost();
 		if(opponentNewCost < opponentCost) {
 			this.opponentSolution = new Solution(opponentNewSolution);
@@ -239,7 +250,7 @@ public class AuctionAgent implements AuctionBehavior {
 		
 		if(winner == agent.id()) {
 			// If we won the task, update our plan
-			Solution sol = this.computePlan(agent.vehicles(), agent.getTasks());
+			Solution sol = this.computePlan(agent.vehicles(), agent.getTasks(), (bidTimeout - 10)/2);
 			double cost = sol.getCost();
 			
 			if(cost < this.newCost) {
@@ -270,7 +281,7 @@ public class AuctionAgent implements AuctionBehavior {
         Solution sol = solution;
         
         if(sol == null) {
-            for(Vehicle v : vehicles) {
+            for(@SuppressWarnings("unused") Vehicle v : vehicles) {
             	plans.add(Plan.EMPTY);
             }
         }
@@ -294,7 +305,8 @@ public class AuctionAgent implements AuctionBehavior {
         return plans;
     }
     
-    private Solution computeOpponentPlan(Task task) {
+    // Compute the opponent plan with the tasks he has with an additional provided one
+    private Solution computeOpponentPlan(Task task, long timeout) {
     	City initCity;
     	if(opponentTasks.size() == 0)
     		initCity = task.pickupCity;
@@ -312,11 +324,11 @@ public class AuctionAgent implements AuctionBehavior {
     	ennemyTasksArray[i] = t;
     	TaskSet tasks = TaskSet.create(ennemyTasksArray);
     	
-    	return this.computePlan(vehicles, tasks);
+    	return this.computePlan(vehicles, tasks, timeout);
     }
     
-    
-    private Solution computePlan(List<Vehicle> vehicles, TaskSet tasks) {
+    // Compute a plan with the given vehicles and tasks
+    private Solution computePlan(List<Vehicle> vehicles, TaskSet tasks, long timeout) {
     	Solution initSol = this.getInitialSolution(vehicles, tasks);
     	
     	if(initSol == null)
@@ -331,10 +343,12 @@ public class AuctionAgent implements AuctionBehavior {
     	else
     		stagn = 100*(numberOfTasks - 7);
     	
-    	return this.computeSLS(initSol, 0.5, 20000, stagn, 100, 2, false);
+    	return this.computeSLS(initSol, 0.5, 20000, stagn, 100, 2, timeout, false);
     }
     
-    private Solution computePlan(Solution lastSolution, Task newTask) {
+    // Compute a plan with a base plan and an additional task. The base plan is used
+    // as the initial solution for the SLS algorithm.
+    private Solution computePlan(Solution lastSolution, Task newTask, long timeout) {
     	Solution initSol = new Solution(lastSolution);
     	initSol.addTask(newTask);
     	
@@ -347,7 +361,7 @@ public class AuctionAgent implements AuctionBehavior {
     	else
     		stagn = 100*(numberOfTasks - 7);
     	
-    	return this.computeSLS(initSol, 0.5, 20000, stagn, 100, 2, false);
+    	return this.computeSLS(initSol, 0.5, 20000, stagn, 100, 2, timeout, false);
     }
 	
     // Return a solution with the tasks randomly spread between the vehicles. Return
@@ -402,12 +416,14 @@ public class AuctionAgent implements AuctionBehavior {
     // showPlot: whether to show a live plot of the results or not
     private Solution computeSLS(Solution initSolution, double randomFactor,
     		int maxIter, int maxStagnationIter, int maxLocalStagnationIter,
-    		int pertubationSteps, boolean showPlot) {
+    		int pertubationSteps, long timeout, boolean showPlot) {
     	Solution A = initSolution, best = initSolution;
     	double cost = initSolution.getCost();
     	double overallBestCost = Double.POSITIVE_INFINITY, localBestCost = Double.POSITIVE_INFINITY;
     	Random random = new Random();
     	int iter = 0, stagnationIter = 0, localStagnationIter = 0;
+    	long maxIterTime = 0;
+    	long startTime = System.currentTimeMillis();
 
     	// Setup graph
     	JFrame frame;
@@ -428,6 +444,7 @@ public class AuctionAgent implements AuctionBehavior {
     	
     	// Search until we reached maxIter or didn't find a better solution for a while
     	while(iter < maxIter && stagnationIter < maxStagnationIter) {
+    		long iterStartTime = System.currentTimeMillis();
     		List<Solution> neighbours;
     		
     		// If we are trapped in a local minima
@@ -503,17 +520,20 @@ public class AuctionAgent implements AuctionBehavior {
     		iter++;
     		stagnationIter++;
     		localStagnationIter++;
+    		
+    		long currentTime = System.currentTimeMillis();
+    		long iterTime = currentTime - iterStartTime;
+    		long remainingTime = timeout - (currentTime - startTime);
+
+    		if(iterTime > maxIterTime)
+    			maxIterTime = iterTime;
+    		
+    		if(remainingTime < 2*maxIterTime) {
+    			System.out.println("Broke early!");
+    			break;
+    		}
     	}
     	
-//    	if(iter == maxIter) {
-//    		System.out.println("Stopped because max iter reached.");
-//    	}
-//    	else {
-//    		System.out.println("Stopped because stagnated for too long. iter = " + iter);
-//    	}
-//    	
-//    	System.out.println("Final cost: " + best.getCost());
-
     	return best;
     }
 }
