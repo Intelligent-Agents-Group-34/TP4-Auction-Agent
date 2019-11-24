@@ -22,171 +22,223 @@ import logist.topology.Topology.City;
 import ptolemy.plot.Plot;
 
 public class AuctionAgent implements AuctionBehavior {
-
+	private final boolean verbose = true;
 	private Agent agent;
-	private Topology topology;
-	private TaskDistribution distribution;
+	private final int n0 = 3; // "Early game"
+	private final long bid0 = 1000; // First bid
+	private long lastBid;
+	private final int minOpponentBidHorizon = 5;
 	private double cost;
 	private double newCost;
 	private Solution solution;
 	private Solution newSolution;
 	private Task lastTask;
 	
-	private List<Double> ennemyBids;
-	private List<Task> ennemyTasks;
-	private List<Double> ennemyMarginalCosts;
-	private double ennemyCost;
-	private Solution ennemySolution;
+	private List<Double> opponentBids;
+	private List<Task> opponentTasks;
+	private List<Double> opponentCms;
+	private double opponentCost;
+	private Solution opponentSolution;
+	private final int opponentCmMinSamples = 3;
 
 	@Override
 	public void setup(Topology topology, TaskDistribution distribution,
 			Agent agent) {
 		this.agent = agent;
-		this.topology = topology;
-		this.distribution = distribution;
+		this.lastBid = 0;
 		this.cost = 0;
 		this.newCost = 0;
 		this.solution = this.getInitialSolution(agent.vehicles(), TaskSet.create(new Task[0]));
 		this.newSolution = new Solution(solution);
 		
-		this.ennemyBids = new ArrayList<Double>();
-		this.ennemyTasks = new ArrayList<Task>();
-		this.ennemyMarginalCosts = new ArrayList<Double>();
-		this.ennemyCost = 0;
-		this.ennemySolution = new Solution(solution);
+		this.opponentBids = new ArrayList<Double>();
+		this.opponentTasks = new ArrayList<Task>();
+		this.opponentCms = new ArrayList<Double>();
+		this.opponentCost = 0;
+		this.opponentSolution = new Solution(solution);
 	}
 	
 	@Override
 	public Long askPrice(Task task) {
+		int n = agent.getTotalTasks(); // Number of tasks we currently have
+		int nOpponent = opponentTasks.size(); // Number of task the opponent has
+		if(verbose)
+			System.out.println("Tasks: " + n + " / " + nOpponent);
+		
+		long startTime = System.currentTimeMillis();
+		// Save it so we can replace it later with the correct one (due to logist constrains)
 		this.lastTask = task;
 		
+		//// Compute marginal cost
+		// Compute the solution with the new task and its cost
 		this.newSolution = this.computePlan(solution, task);
-		
-		if(newSolution == null)
+		if(newSolution == null) // Don't take the task if we can't handle it
 			return null;
-
 		this.newCost = newSolution.getCost();
 		
+		// If the new cost is less than the old one, it means that the old solution is
+		// bad. Thus we replace it with the new solution but without the new task.
 		if(newCost < cost) {
 			this.solution = new Solution(newSolution);
 			this.solution.removeTask(task);
 			this.cost = solution.getCost();
 		}
-
+		
+		// Marginal cost
 		double Cm = newCost - cost;
-		
-		int n = agent.getTotalTasks(); // Number of tasks we currently have
-		int h = 5; // Horizon
-		
-		double Ch = this.getMeanFutureCost(agent.getTasks(), h, 10)/(n + h);
-		double Cn = this.getMeanFutureCost(agent.getTasks(), 1, 10)/(n + 1);
-		double C = Cm*Ch/Cn;
-		
-		System.out.println("Tasks: " + n + " / " + ennemyTasks.size());
-		System.out.println("Marginal Cost: " + Cm);
-		System.out.println("C(n+h): " + Ch);
-		System.out.println("C(n): " + Cn);
-		System.out.println("C: " + C);
-		System.out.println("Ch/Cn: " + (Ch/Cn));
-		
-		double bid;
-		
-		double meanEnnemyBid = 0;
-		double minEnnemyBid = Double.POSITIVE_INFINITY;
-		int ennemyNB = Math.min(ennemyBids.size(), h);
-		System.out.println(ennemyNB);
-		if(ennemyNB == 0)
-			minEnnemyBid = 0;
-		else {
-			for(int i = 0; i < ennemyNB; i++) {
-				meanEnnemyBid += ennemyBids.get(ennemyBids.size() - 1 - i);
-				minEnnemyBid = Math.min(minEnnemyBid, ennemyBids.get(ennemyBids.size() - 1 - i));
-			}
-			meanEnnemyBid /= ennemyNB;
-		}
-		
-		if(n < 3) {
-			bid = 0;
-		}
-		else {
-			bid = Math.max(C, 0.8*meanEnnemyBid);
-		}
-		
-		if(n > 5 && ennemyNB == h) {
-			double mx = 0, my = 0;
-			for(int i = 0; i < ennemyNB; i++) {
-				mx += ennemyMarginalCosts.get(ennemyMarginalCosts.size() - 1 - i);
-				my += ennemyBids.get(ennemyBids.size() - 1 - i);
-			}
-			mx /= ennemyNB;
-			my /= ennemyNB;
+		if(verbose) {
+			System.out.println("Time to compute Cm: "
+					+ (System.currentTimeMillis() - startTime) + " ms");
 			
+			System.out.println("Marginal Cost: " + Cm);
+		}
+		
+		// Compute the minimum bid from the opponent over the last X auctions
+		double minOpponentBid = Double.POSITIVE_INFINITY;
+		int minOpponentBidCount = Math.min(opponentBids.size(), minOpponentBidHorizon);
+		if(minOpponentBidCount == 0)
+			minOpponentBid = 0;
+		else {
+			for(int i = 0; i < minOpponentBidCount; i++) {
+				minOpponentBid = Math.min(minOpponentBid, opponentBids.get(opponentBids.size() - 1 - i));
+			}
+		}
+		
+		// If we have only a few tasks, apply a specific strategy
+		if(n < n0) {
+			if(nOpponent == 0) {
+				return bid0;
+			}
+			else if(nOpponent == 1) {
+				return (lastBid/2);
+			}
+			else {
+				return (long)(0.8*minOpponentBid);
+			}
+		}
+		
+		double bid = Cm;
+		
+		//// If we have a sample size of opponent marginal costs big enough, compute a
+		//// linear regression model to predict the next opponent bid.
+		int opponentCmCount = opponentCms.size();
+		if(opponentCmCount > opponentCmMinSamples) {
+			// X = opponent marginal costs
+			// Y = opponent bids
+			
+			// Compute the means
+			double mx = 0, my = 0;
+			for(int i = 0; i < opponentCmCount; i++) {
+				mx += opponentCms.get(opponentCmCount - 1 - i);
+				my += opponentBids.get(opponentBids.size() - 1 - i);
+			}
+			mx /= opponentCmCount;
+			my /= opponentCmCount;
+			
+			// Compute the standard deviations and the covariance
 			double sx = 0, sy = 0, sxy = 0;
-			for(int i = 0; i < ennemyNB; i++) {
-				double x = ennemyMarginalCosts.get(ennemyMarginalCosts.size() - 1 - i);
-				double y = ennemyBids.get(ennemyBids.size() - 1 - i);
+			for(int i = 0; i < opponentCmCount; i++) {
+				double x = opponentCms.get(opponentCmCount - 1 - i);
+				double y = opponentBids.get(opponentBids.size() - 1 - i);
 				sx += (x - mx)*(x - mx);
 				sy += (y - my)*(y - my);
 				sxy += (x - mx)*(y - my);
 			}
-			sx /= ennemyNB - 1;
+			sx /= opponentCmCount - 1;
 			sx = Math.sqrt(sx);
-			sy /= ennemyNB - 1;
+			sy /= opponentCmCount - 1;
 			sy = Math.sqrt(sy);
-			sxy /= ennemyNB - 1;
+			sxy /= opponentCmCount - 1;
 			
-			double m = sxy/(sx*sx);
-			double b = my - m*mx;
+			double predictedOpponentBid;
+			double sLinRegError;
 			
-			double stdevError = 0;
-			for(int i = 0; i < ennemyNB; i++) {
-				double x = ennemyMarginalCosts.get(ennemyMarginalCosts.size() - 1 - i);
-				double y = ennemyBids.get(ennemyBids.size() - 1 - i);
-				stdevError += (y - (m*x + b))*(y - (m*x + b));
+			if(sx != 0) {
+				// Compute the slope and the intercept of the regression line
+				double m = sxy/(sx*sx);
+				double b = my - m*mx;
+				
+				// Compute the standard deviation of the error between the regression line
+				// and the actual values so we have an appreciation of the fitness
+				sLinRegError = 0;
+				for(int i = 0; i < opponentCmCount; i++) {
+					double x = opponentCms.get(opponentCmCount - 1 - i);
+					double y = opponentBids.get(opponentBids.size() - 1 - i);
+					sLinRegError += (y - (m*x + b))*(y - (m*x + b));
+				}
+				sLinRegError /= opponentCmCount - 1;
+				sLinRegError = Math.sqrt(sLinRegError);
+				
+				// Compute the opponent new cost
+				Solution opponentNewSolution = this.computeOpponentPlan(task);
+				double opponentNewCost = opponentNewSolution.getCost();
+				if(opponentNewCost < opponentCost) {
+					this.opponentSolution = new Solution(opponentNewSolution);
+					this.opponentSolution.removeTask(task);
+					this.opponentCost = this.opponentSolution.getCost();
+				}
+				
+				// Predict the opponent bid with the model
+				predictedOpponentBid = m*(opponentNewCost - opponentCost) + b;
 			}
-			stdevError /= ennemyNB - 1;
-			stdevError = Math.sqrt(stdevError);
-			
-			Solution ennemyNewSolution = this.computeEnnemyPlan(task);
-			double ennemyNewCost = ennemyNewSolution.getCost();
-			if(ennemyNewCost < ennemyCost) {
-				this.ennemySolution = new Solution(ennemyNewSolution);
-				this.ennemySolution.removeTask(task);
-				this.ennemyCost = this.ennemySolution.getCost();
+			else { // Can happen if all x values are the same.
+				// In this case, use the mean of y-values as the prediction
+				predictedOpponentBid = my;
+				// And the standard deviation of the y-values as the standard deviation of the
+				// error
+				sLinRegError = sy;
 			}
 			
-			double predictedEnnemyBid = m*(ennemyNewCost - ennemyCost) + b;
-			System.out.println("Predicted ennemy bid: " + predictedEnnemyBid);
-			System.out.println("Standard deviation: " + (2*stdevError));
-			bid = Math.max(bid, predictedEnnemyBid - 2*stdevError - 10);
+			if(verbose) {
+				System.out.println("Predicted ennemy bid: " + predictedOpponentBid);
+				System.out.println("Standard deviation: " + (3*sLinRegError));
+			}
+			
+			// If the predicted opponent bid is higher than our bid, we can (theoretically)
+			// raise our bid and still get the task. If the predicted bid is lower than our
+			// bid, we can lower our bid to the mean of our bid and the opponent one (see report
+			// for details)
+			if(bid < predictedOpponentBid - 3*sLinRegError - 10)
+				bid = predictedOpponentBid - 3*sLinRegError - 10;
+			else if(bid > predictedOpponentBid + 3*sLinRegError)
+				bid = (bid + predictedOpponentBid + 3*sLinRegError)/2;
 		}
 		
-		bid = Math.max(bid, 0.8*minEnnemyBid);
+		// Safety measure
+		bid = Math.max(bid, 0.8*minOpponentBid);
 		
+		if(verbose)
+			System.out.println("Bid: " + bid + "\n");
 		
-		System.out.println("Bid: " + bid + "\n");
 		return (long)bid;
 	}
 	
 	@Override
 	public void auctionResult(Task task, int winner, Long[] offers) {
-		Solution ennemyNewSolution = this.computeEnnemyPlan(task);
-		double ennemyNewCost = ennemyNewSolution.getCost();
-		if(ennemyNewCost < ennemyCost) {
-			this.ennemySolution = new Solution(ennemyNewSolution);
-			this.ennemySolution.removeTask(task);
-			this.ennemyCost = this.ennemySolution.getCost();
+		this.lastBid = offers[agent.id()];
+		
+		// Compute the new opponent solution and its cost
+		Solution opponentNewSolution = this.computeOpponentPlan(task);
+		double opponentNewCost = opponentNewSolution.getCost();
+		if(opponentNewCost < opponentCost) {
+			this.opponentSolution = new Solution(opponentNewSolution);
+			this.opponentSolution.removeTask(task);
+			this.opponentCost = this.opponentSolution.getCost();
 		}
 		
-		int ennemyAgentID = 1 - agent.id();
-		if(offers[ennemyAgentID] != null) {
-			double ennemyBid = (double)offers[ennemyAgentID];
-			this.ennemyBids.add(ennemyBid);
+		int opponentAgentID = 1 - agent.id();
+		if(offers[opponentAgentID] != null) {
+			// Save opponent bid
+			double opponentBid = (double)offers[opponentAgentID];
+			this.opponentBids.add(opponentBid);
 			
-			this.ennemyMarginalCosts.add(ennemyNewCost - ennemyCost);
+			// Save opponent marginal cost. Discard it if the opponent is still in early game
+			if(opponentTasks.size() > 0)
+				this.opponentCms.add(opponentNewCost - opponentCost);
 		}
 		
 		if(winner == agent.id()) {
+			// If we won the task, update our plan
 			Solution sol = this.computePlan(agent.vehicles(), agent.getTasks());
 			double cost = sol.getCost();
 			
@@ -201,10 +253,11 @@ public class AuctionAgent implements AuctionBehavior {
 			}
 		}
 		else {
-			Task t = new Task(ennemyTasks.size(), task.pickupCity, task.deliveryCity, task.reward, task.weight);
-			this.ennemyTasks.add(t);
-			this.ennemySolution = ennemyNewSolution;
-			this.ennemyCost = ennemyNewCost;
+			// If the opponent won the task, update their tasklist and their plan
+			Task t = new Task(opponentTasks.size(), task.pickupCity, task.deliveryCity, task.reward, task.weight);
+			this.opponentTasks.add(t);
+			this.opponentSolution = opponentNewSolution;
+			this.opponentCost = opponentNewCost;
 		}
 	}
 	
@@ -214,8 +267,6 @@ public class AuctionAgent implements AuctionBehavior {
         
         List<Plan> plans = new ArrayList<Plan>();
         
-        // Compute a good plan with the SLS algorithm
-//        Solution sol = this.computePlan(vehicles, tasks);
         Solution sol = solution;
         
         if(sol == null) {
@@ -224,7 +275,6 @@ public class AuctionAgent implements AuctionBehavior {
             }
         }
         else {
-//            sol.updateTasks(tasks);
 	        Map<Vehicle, Plan> planMap = sol.getPlans();
 	        
 	        for(Vehicle v : vehicles) {
@@ -244,61 +294,18 @@ public class AuctionAgent implements AuctionBehavior {
         return plans;
     }
     
-    private Task getRandomTask(int id) {
-    	double p = (new Random()).nextDouble();
-    	double cumul = 0;
-    	
-    	for(City c1 : topology.cities()) {
-    		for(City c2 : topology.cities()) {
-    			cumul += distribution.probability(c1, c2);
-    			
-    			if(cumul > p) {
-    				return new Task(id, c1, c2, 0, distribution.weight(c1, c2));
-    			}
-    		}
-    	}
-    	
-    	return null;
-    }
-    
-    private double getMeanFutureCost(TaskSet tasks, int horizon, int samples) {
-    	double cost = 0;
-    	
-    	horizon = Math.min(horizon, Math.max(20 - tasks.size(), 0));
-    	
-    	for(int i = 0; i < samples; i++) {
-    		Task[] universe = new Task[tasks.size() + horizon];
-    		
-    		int j = 0;
-    		for(Task t : tasks) {
-    			universe[j] = new Task(j, t.pickupCity, t.deliveryCity, t.reward, t.weight);
-    			j++;
-    		}
-    		for(int k = 0; k < horizon; k++) {
-    			universe[j] = this.getRandomTask(j);
-    			j++;
-    		}
-    		TaskSet taskSet = TaskSet.create(universe);
-    		
-    		Solution sol = this.computePlan(agent.vehicles(), taskSet);
-    		cost += sol.getCost();
-    	}
-    	
-    	return cost/samples;
-    }
-    
-    private Solution computeEnnemyPlan(Task task) {
+    private Solution computeOpponentPlan(Task task) {
     	City initCity;
-    	if(ennemyTasks.size() == 0)
+    	if(opponentTasks.size() == 0)
     		initCity = task.pickupCity;
     	else
-    		initCity = ennemyTasks.get(0).pickupCity;
+    		initCity = opponentTasks.get(0).pickupCity;
     	Vehicle v = new VehicleImpl(0, "Ennemy", Integer.MAX_VALUE, 5, initCity, 5, Color.BLACK).getInfo();
     	List<Vehicle> vehicles = new ArrayList<Vehicle>();
     	vehicles.add(v);
-    	Task[] ennemyTasksArray = new Task[ennemyTasks.size() + 1];
+    	Task[] ennemyTasksArray = new Task[opponentTasks.size() + 1];
     	int i = 0;
-    	for(Task t : ennemyTasks) {
+    	for(Task t : opponentTasks) {
     		ennemyTasksArray[i++] = t;
     	}
     	Task t = new Task(i, task.pickupCity, task.deliveryCity, task.reward, task.weight);
